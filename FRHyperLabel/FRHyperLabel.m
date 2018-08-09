@@ -17,6 +17,8 @@
 @property (nonatomic) NSAttributedString *backupAttributedText;
 @property (nonatomic) CGRect boundingBox;
 
+@property (nonatomic, assign) BOOL isTouchMoved;
+
 @end
 
 @implementation FRHyperLabel
@@ -107,30 +109,34 @@ static UIColor *FRHyperLabelLinkColorHighlight;
 }
 
 - (void)setLinksForSubstrings:(NSArray *)linkStrings withLinkHandler:(void(^)(FRHyperLabel *label, NSString *substring))handler {
-	for (NSString *linkString in linkStrings) {
-		[self setLinkForSubstring:linkString withLinkHandler:handler];
-	}
+    for (NSString *linkString in linkStrings) {
+        [self setLinkForSubstring:linkString withLinkHandler:handler];
+    }
 }
 
 #pragma mark - Event Handler
 
 - (void)touchesBegan:(NSSet *)touches withEvent:(UIEvent *)event {
 	self.backupAttributedText = self.attributedText;
-	for (UITouch *touch in touches) {
-		CGPoint touchPoint = [touch locationInView:self];
-		NSValue *rangeValue = [self attributedTextRangeForPoint:touchPoint];
-		if (rangeValue) {
-			NSRange range = [rangeValue rangeValue];
-			NSMutableAttributedString *attributedString = [[NSMutableAttributedString alloc]initWithAttributedString:self.attributedText];
-			[attributedString addAttributes:self.linkAttributeHighlight range:range];
-			
-			[UIView transitionWithView:self duration:highLightAnimationTime options:UIViewAnimationOptionTransitionCrossDissolve animations:^{
-				self.attributedText = attributedString;
-			} completion:nil];
-			return;
-		}
-	}
-	[super touchesBegan:touches withEvent:event];
+    for (UITouch *touch in touches) {
+        CGPoint touchPoint = [touch locationInView:self];
+        NSValue *rangeValue = [self attributedTextRangeForPoint:touchPoint];
+        if (rangeValue) {
+            NSRange range = [rangeValue rangeValue];
+            NSMutableAttributedString *attributedString = [[NSMutableAttributedString alloc]initWithAttributedString:self.attributedText];
+            @try {
+                [attributedString addAttributes:self.linkAttributeHighlight range:range];
+            } @catch (NSException *e){
+                NSLog(@"%@", e);
+            }
+
+            [UIView transitionWithView:self duration:highLightAnimationTime options:UIViewAnimationOptionTransitionCrossDissolve animations:^{
+                self.attributedText = attributedString;
+            } completion:nil];
+            return;
+        }
+    }
+    [super touchesBegan:touches withEvent:event];
 }
 
 - (void)touchesCancelled:(NSSet *)touches withEvent:(UIEvent *)event {
@@ -141,79 +147,97 @@ static UIColor *FRHyperLabelLinkColorHighlight;
 }
 
 - (void)touchesEnded:(NSSet *)touches withEvent:(UIEvent *)event {
-	[UIView transitionWithView:self duration:highLightAnimationTime options:UIViewAnimationOptionTransitionCrossDissolve animations:^{
-		self.attributedText = self.backupAttributedText;
-	} completion:nil];
-	
-	for (UITouch *touch in touches) {
-		NSValue *rangeValue = [self attributedTextRangeForPoint:[touch locationInView:self]];
-		if (rangeValue) {
-			void(^handler)(FRHyperLabel *label, NSRange selectedRange) = self.handlerDictionary[rangeValue];
-			handler(self, [rangeValue rangeValue]);
-			return;
-		}
-	}
-	[super touchesEnded:touches withEvent:event];
+    [UIView transitionWithView:self duration:highLightAnimationTime options:UIViewAnimationOptionTransitionCrossDissolve animations:^{
+        self.attributedText = self.backupAttributedText;
+    } completion:nil];
+
+    for (UITouch *touch in touches) {
+        NSValue *rangeValue = [self attributedTextRangeForPoint:[touch locationInView:self]];
+        if (rangeValue) {
+            void(^handler)(FRHyperLabel *label, NSRange selectedRange) = self.handlerDictionary[rangeValue];
+            handler(self, [rangeValue rangeValue]);
+            return;
+        }
+    }
+    [super touchesEnded:touches withEvent:event];
 }
 
 #pragma mark - Substring Locator
 
 - (NSInteger) characterIndexForPoint:(CGPoint) point {
-	CGRect boundingBox = [self attributedTextBoundingBox];
-	
-	CGMutablePathRef path = CGPathCreateMutable();
-	CGPathAddRect(path, NULL, boundingBox);
-	
-	CTFramesetterRef framesetter = CTFramesetterCreateWithAttributedString((CFAttributedStringRef)self.attributedText);
-	CTFrameRef ctFrame = CTFramesetterCreateFrame(framesetter, CFRangeMake(0, self.attributedText.length), path, NULL);
-	
-	CGFloat verticalPadding = (CGRectGetHeight(self.frame) - CGRectGetHeight(boundingBox)) / 2;
-	CGFloat horizontalPadding = (CGRectGetWidth(self.frame) - CGRectGetWidth(boundingBox)) / 2;
-	CGFloat ctPointX = point.x - horizontalPadding;
-	CGFloat ctPointY = CGRectGetHeight(boundingBox) - (point.y - verticalPadding);
-	CGPoint ctPoint = CGPointMake(ctPointX, ctPointY);
-	
-	CFArrayRef lines = CTFrameGetLines(ctFrame);
-	
-	CGPoint* lineOrigins = malloc(sizeof(CGPoint)*CFArrayGetCount(lines));
-	CTFrameGetLineOrigins(ctFrame, CFRangeMake(0,0), lineOrigins);
-	
-	NSInteger indexOfCharacter = -1;
-	
-	for(CFIndex i = 0; i < CFArrayGetCount(lines); i++) {
-		CTLineRef line = CFArrayGetValueAtIndex(lines, i);
-		
-		CGFloat ascent, descent, leading;
-		CTLineGetTypographicBounds(line, &ascent, &descent, &leading);
-		
-		CGPoint origin = lineOrigins[i];
-		
-		if (ctPoint.y > origin.y - descent) {
-			indexOfCharacter = CTLineGetStringIndexForPosition(line, ctPoint);
-			break;
-		}
-	}
-	
-	free(lineOrigins);
-	CFRelease(ctFrame);
-	CFRelease(path);
-	CFRelease(framesetter);
-	
-	return indexOfCharacter;
+    NSTextStorage *textStorage = [[NSTextStorage alloc] initWithAttributedString:self.attributedText];
+    NSLayoutManager *layoutManager = [[NSLayoutManager alloc] init];
+    [textStorage addLayoutManager:layoutManager];
+    
+    // init text container
+    NSTextContainer *textContainer = [[NSTextContainer alloc] initWithSize:CGSizeMake(self.frame.size.width, self.frame.size.height+100) ];
+    textContainer.lineFragmentPadding  = 7;
+    textContainer.maximumNumberOfLines = self.numberOfLines;
+    textContainer.lineBreakMode        = self.lineBreakMode;
+    
+    [layoutManager addTextContainer:textContainer];
+    
+    NSUInteger characterIndex = [layoutManager characterIndexForPoint:point
+                                                      inTextContainer:textContainer
+                             fractionOfDistanceBetweenInsertionPoints:NULL];
+    
+    return (NSInteger)characterIndex;
+    
+//	CGRect boundingBox = [self attributedTextBoundingBox];
+//	
+//	CGMutablePathRef path = CGPathCreateMutable();
+//	CGPathAddRect(path, NULL, boundingBox);
+//	
+//	CTFramesetterRef framesetter = CTFramesetterCreateWithAttributedString((CFAttributedStringRef)self.attributedText);
+//	CTFrameRef ctFrame = CTFramesetterCreateFrame(framesetter, CFRangeMake(0, self.attributedText.length), path, NULL);
+//	
+//	CGFloat verticalPadding = (CGRectGetHeight(self.frame) - CGRectGetHeight(boundingBox)) / 2;
+//	CGFloat horizontalPadding = (CGRectGetWidth(self.frame) - CGRectGetWidth(boundingBox)) / 2;
+//	CGFloat ctPointX = point.x - horizontalPadding;
+//	CGFloat ctPointY = CGRectGetHeight(boundingBox) - (point.y - verticalPadding);
+//	CGPoint ctPoint = CGPointMake(ctPointX, ctPointY);
+//	
+//	CFArrayRef lines = CTFrameGetLines(ctFrame);
+//	
+//	CGPoint* lineOrigins = malloc(sizeof(CGPoint)*CFArrayGetCount(lines));
+//	CTFrameGetLineOrigins(ctFrame, CFRangeMake(0,0), lineOrigins);
+//	
+//	NSInteger indexOfCharacter = -1;
+//	
+//	for(CFIndex i = 0; i < CFArrayGetCount(lines); i++) {
+//		CTLineRef line = CFArrayGetValueAtIndex(lines, i);
+//		
+//		CGFloat ascent, descent, leading;
+//		CTLineGetTypographicBounds(line, &ascent, &descent, &leading);
+//		
+//		CGPoint origin = lineOrigins[i];
+//		
+//		if (ctPoint.y > origin.y - descent) {
+//			indexOfCharacter = CTLineGetStringIndexForPosition(line, ctPoint);
+//			break;
+//		}
+//	}
+//	
+//	free(lineOrigins);
+//	CFRelease(ctFrame);
+//	CFRelease(path);
+//	CFRelease(framesetter);
+//	
+//	return indexOfCharacter;
 }
 
 - (NSValue *)attributedTextRangeForPoint:(CGPoint)point {
 
-	NSInteger indexOfCharacter = [self characterIndexForPoint:point];
-	
-	for (NSValue *rangeValue in self.handlerDictionary) {
-		NSRange range = [rangeValue rangeValue];
-		if (NSLocationInRange(indexOfCharacter, range)) {
-			return rangeValue;
-		}
-	}
+    NSInteger indexOfCharacter = [self characterIndexForPoint:point];
 
-	return nil;
+    for (NSValue *rangeValue in self.handlerDictionary) {
+        NSRange range = [rangeValue rangeValue];
+        if (NSLocationInRange(indexOfCharacter, range)) {
+            return rangeValue;
+        }
+    }
+
+    return nil;
 }
 
 - (CGRect)attributedTextBoundingBox {
